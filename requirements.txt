@@ -1,0 +1,4 @@
+matplotlib
+numpy
+colorama
+psutil
