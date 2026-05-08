@@ -1,5 +1,6 @@
-results/
 __pycache__/
 *.pyc
 *.pyo
 .pytest_cache/
+benchmark_results.csv
+benchmark_results.json
