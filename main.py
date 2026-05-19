@@ -19,7 +19,10 @@ import os
 import sys
 import platform
 
-from benchmark.runner import BenchmarkRunner, LOCK_REGISTRY
+from benchmark.runner import (
+    BenchmarkRunner, LOCK_REGISTRY,
+    MultiprocessingBenchmarkRunner, MP_LOCK_REGISTRY,
+)
 from report.table import render_table
 from report.charts import save_all_charts
 from report.exporter import export_json, export_csv
@@ -82,6 +85,16 @@ def _parse_args() -> argparse.Namespace:
         "--no-plots",
         action="store_true",
         help="Skip chart generation (useful in headless CI environments)",
+    )
+    parser.add_argument(
+        "--backend",
+        default="threading",
+        choices=["threading", "multiprocessing"],
+        help=(
+            "Concurrency backend. \'threading\' (default) uses threads and is "
+            "limited by the GIL. \'multiprocessing\' spawns real OS processes "
+            "for true parallelism and realistic lock-contention measurements."
+        ),
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -160,24 +173,35 @@ def main() -> int:
     # ------------------------------------------------------------------
     # Print banner
     # ------------------------------------------------------------------
+    is_mp = args.backend == "multiprocessing"
+    active_registry = MP_LOCK_REGISTRY if is_mp else LOCK_REGISTRY
+
     print("=" * 70)
     print("  LOCK CONTENTION BENCHMARK SUITE")
     print(f"  Python {sys.version.split()[0]}  |  {platform.system()} {platform.machine()}")
-    print(f"  Threads: {thread_counts}")
-    print(f"  Increments per thread: {args.increments:,}")
+    print(f"  Backend:  {args.backend.upper()}")
+    print(f"  {'Processes' if is_mp else 'Threads'}: {thread_counts}")
+    print(f"  Increments per {'process' if is_mp else 'thread'}: {args.increments:,}")
     print(f"  Repetitions: {args.repeat}")
-    print(f"  Mechanisms: {mechanisms or list(LOCK_REGISTRY.keys())}")
+    print(f"  Mechanisms: {mechanisms or list(active_registry.keys())}")
     print("=" * 70)
     print()
 
-    # GIL note
-    print(
-        "  Python GIL NOTE:\n"
-        "  CPython's Global Interpreter Lock (GIL) prevents true parallel\n"
-        "  execution of CPU-bound threads. This benchmark measures lock\n"
-        "  *overhead* and contention *patterns* — not raw parallel speedup.\n"
-        "  Use --increments 1000000 to make lock overhead more visible.\n"
-    )
+    if is_mp:
+        print(
+            "  MULTIPROCESSING NOTE:\n"
+            "  Using real OS processes — GIL is bypassed. Each process runs on\n"
+            "  its own CPU core, producing realistic lock-contention measurements.\n"
+            "  Spinlock now burns real CPU cycles; MCS/Ticket show FIFO fairness.\n"
+        )
+    else:
+        print(
+            "  Python GIL NOTE:\n"
+            "  CPython's Global Interpreter Lock (GIL) prevents true parallel\n"
+            "  execution of CPU-bound threads. This benchmark measures lock\n"
+            "  *overhead* and contention *patterns* — not raw parallel speedup.\n"
+            "  Use --backend multiprocessing for realistic results.\n"
+        )
 
     # ------------------------------------------------------------------
     # Correctness validation
@@ -190,12 +214,20 @@ def main() -> int:
     # Run benchmarks
     # ------------------------------------------------------------------
     try:
-        runner = BenchmarkRunner(
-            thread_counts=thread_counts,
-            increments=args.increments,
-            repeat=args.repeat,
-            mechanisms=mechanisms,
-        )
+        if is_mp:
+            runner = MultiprocessingBenchmarkRunner(
+                thread_counts=thread_counts,
+                increments=args.increments,
+                repeat=args.repeat,
+                mechanisms=mechanisms,
+            )
+        else:
+            runner = BenchmarkRunner(
+                thread_counts=thread_counts,
+                increments=args.increments,
+                repeat=args.repeat,
+                mechanisms=mechanisms,
+            )
     except ValueError as exc:
         logger.error("%s", exc)
         return 1
